@@ -29,13 +29,218 @@ library(geodata) # to download geographic data including climate, elevation and 
 # library(rgbif) # to download species occurrence data from gbif
 ```
 
+# Part 1: Fires and Remote Sensing Data
 # Downloading Data
 ```{r}
-# First, downloading a .csv file
+# First, downloading some shapefiles
+willow_pts <- read_sf(here('data', 'willow_pts.shp')) # coordinates of sites
+replanted_polygons <- read_sf(here('data', 'willow_FACTS_replanting.shp')) # polygons of areas where USFS planted trees post-fire
 
-# Next, downloading some shapefiles
+# Next, downloading some rasters
+burn_severity <- rast(here('data', 'willow_2015_dnbr6.tif')) # MTBS burn severity classes for Willow fire
+nbr_stack <- rast(here('data', 'willow_NBR.tif')) # raster stack of growing season (June 1-August 31) NBR from 1998-2024
+```
 
-# Lastly, downloading some rasters
+# Coordinate Systems
+```{r}
+# To check what coordinate system our spatial data is stored in
+st_crs(burn_severity)
 
+# Holy cow that is a lot... To just check out a short-form of CRS, we can:
+st_crs(burn_severity)$Name
+
+# Are all spatial data in the same CRS?
+st_crs(nbr_stack)$Name
+st_crs(willow_pts)$Name
+st_crs(replanted_polygons)$Name
+
+# Reprojecting spatial data so they're all in the same CRS
+# using terra (for rasters)
+nbr_stack <- project(nbr_stack, crs(burn_severity))
+st_crs(nbr_stack)$Name
+# using sf (for shapefile)
+replanted_polygons <- st_transform(replanted_polygons, st_crs(burn_severity))
+st_crs(replanted_polygons)$Name
+```
+
+# Simple Maps
+(as simple as it gets)
+```{r}
+# select both and run
+plot(burn_severity)
+points(willow_pts)
+
+# NBR from 2014-2017 (fire in later 2015)
+plot(nbr_stack[[17:20]])
+```
+
+# Extracting Data
+The most common thing I do with spatial data in R is... change it so that it's not spatial data. Although it can be very nice to retain the spatial information, it can also make code take longer to run and it can be sometimes unnecessary. If we only want the information encoded in the rasters or shapefiles for our sites, then we can extract the data and work with that dataframe. 
+```{r}
+# from rasters
+severity_vals <- extract(burn_severity, willow_pts) # burn severity
+class(severity_vals) # stored as a dataframe
+colnames(severity_vals)[2] <- 'burn_severity' # to rename column
+nbr_vals <- extract(nbr_stack, willow_pts) # yearly NBR
+
+# from shapefile
+treatment_vals_all <- st_join(willow_pts, replanted_polygons) # option 1: for all of the points, add information from the polygon; if they don't intersect with polygon, add NAs; note, if polygons intersect, it will add rows for each polygon that the point is in
+class(treatment_vals_all) # stored as a spatial dataframe (simple features)
+treatment_vals_intersects <- st_join(willow_pts, replanted_polygons, left = F) # option 2: remove any rows where points do not intersect with polygons
+
+# clean up treatment_vals_all
+clean_treatment_vals <- treatment_vals_all %>% 
+  select(id.x, geometry, ACTIVITY) %>% 
+  rename(ID = id.x) %>%  # because there was an id column in replanted_polygons, we had id.x and id.y in resulting spatial dataframe
+  mutate(count = ifelse(is.na(ACTIVITY), 0, 1)) # add a column where we have a 1 for each instance of replanting trees
+
+clean_treatment_sums <- clean_treatment_vals %>% 
+  group_by(ID) %>% 
+  summarise(replanting = sum(count)) %>%  # so that new dataframe has a column for each site equal to the number of times the area was replanted
+  st_drop_geometry() # removing spatial component
+
+# combining dataframes
+extracted_df <- severity_vals %>% 
+  left_join(clean_treatment_sums, by = 'ID') %>% 
+  left_join(nbr_vals, by = 'ID')
+```
+
+# Visualizations
+## Time Series
+```{r}
+# first, get the data in long format where we have a column for year and a column for NBR
+long_df <- extracted_df %>% 
+  pivot_longer(cols = !c('ID', 'burn_severity', 'replanting'),
+      names_to = 'year',
+      values_to = 'nbr') %>%
+  mutate(burn_severity = case_when(
+    burn_severity == 1 ~ 'Unburned',
+    burn_severity == 2 ~ 'Low Severity',
+    burn_severity == 3 ~ 'Moderate Severity',
+    burn_severity == 4 ~ 'High Severity')) %>%  # so that our burn severity values are a bit more informative
+  mutate(year = as.numeric(year)) # so that it's not stored as a character vector
+
+# for each burn severity class, take the median value of NBR for each year
+medians_df <- long_df %>% 
+  group_by(burn_severity, year) %>% 
+  summarise(nbr = median(nbr))
+
+# visualization
+ggplot() +
+  geom_line(aes(x = year, y = nbr), data = medians_df, linewidth = 2) +
+  geom_point(aes(x = year, y = nbr), data = long_df, alpha = 0.3) +
+  geom_vline(xintercept = 2015, linetype = 'dashed') +
+  facet_wrap(~burn_severity) +
+  labs(x = 'Year', y = 'Normalized Burn Ratio') +
+  theme_classic()
+```
+
+## dNBR vs. MTBS Severity
+```{r}
+extracted_df %>% 
+  mutate(burn_severity = case_when(
+    burn_severity == 1 ~ 'Unburned',
+    burn_severity == 2 ~ 'Low Severity',
+    burn_severity == 3 ~ 'Moderate Severity',
+    burn_severity == 4 ~ 'High Severity')) %>%  # so that our burn severity values are a bit more informative
+  mutate(burn_severity = fct_relevel(burn_severity, c('Unburned', 'Low Severity', 'Moderate Severity', 'High Severity'))) %>%  # so that the x axis is in the order we want
+  mutate(dnbr = `2015`-`2016`) %>%  # calculating dNBR
+  ggplot(aes(x = burn_severity, y = dnbr)) +
+    geom_boxplot(outlier.shape = NA, fill = NA, ) +
+    geom_jitter(width = 0.2, height = 0) +
+    labs(x = 'MTBS Burn Severity', y = 'dNBR') +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+```
+
+
+Okay, that was a bit of a digression. Let's get back to playing with our spatial data.
+
+# Raster Math
+NIRv is an index that is more closely related to photosynthesis and gross primary productivity (GPP) and it is equal to NDVI*NIR. However, I use LandTrendr in Google Earth Engine to get my time series of remotely sensed data and they don't have an option to directly get time series for NIRv. They do have NDVI and NIR though! We can simply multiply them here.
+```{r}
+ndvi_stack <- rast(here('data', 'willow_NDVI.tif')) # raster stack of growing season (June 1-August 31) NDVI from 1998-2024
+nir_stack <- rast(here('data', 'Willow_NIR.tif')) # raster stack of growing season (June 1-August 31) NIR from 1998-2024
+
+nirv_stack <- ndvi_stack*nir_stack # calculating NIRv
+
+# checking out NIRv from 2014-2017
+plot(nirv_stack[[17:20]])
+```
+
+# Nicer Maps
+## ggplot
+```{r}
+dnirv <- nirv_stack[[19]]-nirv_stack[[18]] # change in NIRv due to fire
+
+ggplot() +
+  geom_spatraster(data = dnirv) + # adding raster (easy with tidyterra)
+  scale_x_continuous(guide = guide_axis(check.overlap = T)) + # declutter x axis
+  labs(fill = 'dNIRv') + # legend title
+  scale_fill_gradientn(colors = c('black', 'white', 'darkgreen')) + # change color palette
+  theme_minimal() +
+  theme(panel.grid = element_blank()) # clean up plot
+```
+
+What if we want to add polygons and rasters?
+
+geom_spatvector for vectors
+geom_spatraster for rasters
+
+```{r}
+# downloading boundary
+willow_boundary <- read_sf(here('data', 'willow_boundary.shp')) # coordinates of sites
+
+ggplot() +
+  geom_spatraster(data = dnirv) + # adding raster
+  geom_spatvector(data = replanted_polygons, color = 'black',
+                  fill = 'cyan3', alpha = 0.5) + # adding polygons for planted areas
+  geom_spatvector(data = willow_boundary, color = 'black',
+                  fill = NA, linewidth = 1) + # adding polygon for boundary
+  geom_spatvector(data = willow_pts, aes(color = 'Field Site')) + # adding polygon for points
+  scale_color_manual(name = "Points",
+    values = c("Field Site" = "black")) + # to add sites to legend
+  scale_x_continuous(guide = guide_axis(check.overlap = T)) + # declutter x axis
+  labs(fill = 'dNIRv') + # legend title
+  scale_fill_gradientn(colors = c('black', 'white', 'darkgreen')) + # change color palette
+  theme_minimal() +
+  theme(panel.grid = element_blank()) # clean up plot
+```
+
+## tmap
+```{r}
+# To have an interactive map
+tmap_mode("view")
+
+# Adding elements to the map
+# burn severity raster
+tm_shape(burn_severity) +
+  tm_raster(style = "cat",  # treat as categorical
+    palette = c(
+      "0" = "#FFFFFF00",  # null values (transparent)
+      "1" = "#006400",   # Unburned 
+      "2" = "#7fffd4",   # Low severity
+      "3" = "#ffff00",      # Moderate severity
+      "4" = "#ff0000",   # High severity
+      "5" = "#FFFFFF00"),     # Increased grenness (transparent)
+    title = "Burn Severity") + # note the plus sign to continue adding elemetns
+  
+# Replanted polygons
+tm_shape(replanted_polygons) +
+  tm_polygons(
+    col = "cyan3",
+    border.col = "black",
+    alpha = 0.5,
+    legend.show = TRUE,
+    id = "Replanted Area") +
+
+# Field sites
+tm_shape(willow_pts) +
+  tm_symbols(
+    col = "black",
+    shape = 21,
+    size = 0.1,
+    legend.col.show = TRUE,
+    id = "Field Site")
 ```
 
