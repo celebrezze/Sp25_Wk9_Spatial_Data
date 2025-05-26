@@ -1,0 +1,41 @@
+---
+title: "Working with Spatial Data: Tutorial"
+author: "Joe Celebrezze"
+date: "2025-05-26"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# highly necessary packages
+library(tidyverse)
+library(terra) # to work with rasters (mostly)
+library(sf) # to work with shapefiles (mostly)
+
+# extra packages that we use today
+library(here) # handy package to simplify file paths
+library(tidyterra) # easily implement terra objects into tidyverse/ggplot
+library(tmap) # nice visualizations for maps
+library(geodata) # to download geographic data including climate, elevation and species occurrence
+
+# other packages that folks use (that we won't use today)
+# library(stars) # an alternative package to work with spatial data
+# library(raster) # an outdated package to work with raster data that is slower than terra (I still have this one in a lot of my scripts, but I am working towards phasing it out)
+# library(mapview) # an alternative package to make interactive maps
+# library(leaflet) # another package to make interactive maps
+# library(gstat) # for spatial stats
+# library(rgbif) # to download species occurrence data from gbif
+```
+
+# Downloading Data
+```{r}
+# First, downloading a .csv file
+
+# Next, downloading some shapefiles
+
+# Lastly, downloading some rasters
+
+```
+
