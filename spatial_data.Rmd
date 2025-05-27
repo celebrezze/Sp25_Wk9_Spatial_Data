@@ -18,7 +18,6 @@ library(sf) # to work with shapefiles (mostly)
 library(here) # handy package to simplify file paths
 library(tidyterra) # easily implement terra objects into tidyverse/ggplot
 library(tmap) # nice visualizations for maps
-library(geodata) # to download geographic data including climate, elevation and species occurrence
 
 # other packages that folks use (that we won't use today)
 # library(stars) # an alternative package to work with spatial data
@@ -27,9 +26,9 @@ library(geodata) # to download geographic data including climate, elevation and 
 # library(leaflet) # another package to make interactive maps
 # library(gstat) # for spatial stats
 # library(rgbif) # to download species occurrence data from gbif
+# library(geodata) # to download geographic data including climate, elevation and species occurrence
 ```
 
-# Part 1: Fires and Remote Sensing Data
 # Downloading Data
 ```{r}
 # First, downloading some shapefiles
@@ -41,7 +40,7 @@ burn_severity <- rast(here('data', 'willow_2015_dnbr6.tif')) # MTBS burn severit
 nbr_stack <- rast(here('data', 'willow_NBR.tif')) # raster stack of growing season (June 1-August 31) NBR from 1998-2024
 ```
 
-# Coordinate Systems
+# Coordinate Systems and Extents
 ```{r}
 # To check what coordinate system our spatial data is stored in
 st_crs(burn_severity)
@@ -63,16 +62,29 @@ replanted_polygons <- st_transform(replanted_polygons, st_crs(burn_severity))
 st_crs(replanted_polygons)$Name
 ```
 
+What are the extents of these spatial data?
+```{r}
+ext(nbr_stack)
+ext(burn_severity)
+# They're a bit different
+```
+
 # Simple Maps
 (as simple as it gets)
 ```{r}
-# select both and run
-plot(burn_severity)
-points(willow_pts)
+# select both and run or run chunk
+plot(burn_severity) # MTBS burn severity classes
+points(willow_pts) # adding our field sites
 
 # NBR from 2014-2017 (fire in later 2015)
 plot(nbr_stack[[17:20]])
+
+# alternatively, to only visualize years 2014-2017 we could subset those years using terra::subset()
+nbr_subset <- subset(nbr_stack, c(17:20))
+plot(nbr_subset)
 ```
+
+Looking at the maps of the burn severity and the nbr stack, we can see why their extents were slightly different, even though they're the same fire
 
 # Extracting Data
 The most common thing I do with spatial data in R is... change it so that it's not spatial data. Although it can be very nice to retain the spatial information, it can also make code take longer to run and it can be sometimes unnecessary. If we only want the information encoded in the rasters or shapefiles for our sites, then we can extract the data and work with that dataframe. 
@@ -171,12 +183,13 @@ plot(nirv_stack[[17:20]])
 # Nicer Maps
 ## ggplot
 ```{r}
-dnirv <- nirv_stack[[19]]-nirv_stack[[18]] # change in NIRv due to fire
+# another (more complicated) example of raster math
+RdNBR <- (nbr_stack[[19]]-nbr_stack[[18]])/(sqrt(mean(nbr_stack[[1:17]]))) # change in NBR due to fire divided by the square root of the pre-fire mean
 
 ggplot() +
-  geom_spatraster(data = dnirv) + # adding raster (easy with tidyterra)
+  geom_spatraster(data = RdNBR) + # adding raster (easy with tidyterra)
   scale_x_continuous(guide = guide_axis(check.overlap = T)) + # declutter x axis
-  labs(fill = 'dNIRv') + # legend title
+  labs(fill = 'RdNBR') + # legend title
   scale_fill_gradientn(colors = c('black', 'white', 'darkgreen')) + # change color palette
   theme_minimal() +
   theme(panel.grid = element_blank()) # clean up plot
@@ -192,7 +205,7 @@ geom_spatraster for rasters
 willow_boundary <- read_sf(here('data', 'willow_boundary.shp')) # coordinates of sites
 
 ggplot() +
-  geom_spatraster(data = dnirv) + # adding raster
+  geom_spatraster(data = RdNBR) + # adding raster
   geom_spatvector(data = replanted_polygons, color = 'black',
                   fill = 'cyan3', alpha = 0.5) + # adding polygons for planted areas
   geom_spatvector(data = willow_boundary, color = 'black',
@@ -208,6 +221,7 @@ ggplot() +
 ```
 
 ## tmap
+In my experience, interactive maps like tmap or leaflet can be relatively clunky on R and it can be challenging to add everything you want to add. If I want something more interactive, I often use QGIS or ArcGIS.
 ```{r}
 # To have an interactive map
 tmap_mode("view")
@@ -223,7 +237,7 @@ tm_shape(burn_severity) +
       "3" = "#ffff00",      # Moderate severity
       "4" = "#ff0000",   # High severity
       "5" = "#FFFFFF00"),     # Increased grenness (transparent)
-    title = "Burn Severity") + # note the plus sign to continue adding elemetns
+    title = "Burn Severity") + # note the plus sign to continue adding elements to tmap
   
 # Replanted polygons
 tm_shape(replanted_polygons) +
@@ -244,3 +258,95 @@ tm_shape(willow_pts) +
     id = "Field Site")
 ```
 
+```{r}
+# To have an static map
+tmap_mode("plot")
+
+# Adding elements to the map
+# burn severity raster
+tm_shape(burn_severity) +
+  tm_raster(style = "cat",  # treat as categorical
+    palette = c(
+      "0" = "#FFFFFF00",  # null values (transparent)
+      "1" = "#006400",   # Unburned 
+      "2" = "#7fffd4",   # Low severity
+      "3" = "#ffff00",      # Moderate severity
+      "4" = "#ff0000",   # High severity
+      "5" = "#FFFFFF00"),     # Increased grenness (transparent)
+    title = "Burn Severity") + # note the plus sign to continue adding elements to tmap
+  
+# Replanted polygons
+tm_shape(replanted_polygons) +
+  tm_polygons(
+    col = "cyan3",
+    border.col = "black",
+    alpha = 0.5,
+    legend.show = TRUE,
+    id = "Replanted Area") +
+
+# Field sites
+tm_shape(willow_pts) +
+  tm_symbols(
+    col = "black",
+    shape = 21,
+    size = 0.1,
+    legend.col.show = TRUE,
+    id = "Field Site")
+```
+
+# Other Useful Stuff
+Making stacks and renaming rasters
+```{r}
+# to make a raster stack using terra, we can simply use c()
+dNBR <- nbr_stack[[19]]-nbr_stack[[18]] # to calculate dNBR
+homemade_stack <- c(RdNBR, dNBR)
+names(homemade_stack) <- c('RdNBR', 'dNBR') # to rename the rasters
+plot(homemade_stack)
+```
+
+Classifying cell values
+```{r}
+# if we want to use an existing raster to define a new raster (similar to ifelse or case_when), we can use classify()
+# first, set a matrix to use for the classification scheme; we will use dNBR values to classify burn severity
+classification_matrix <- matrix(
+  c(-100, 350, 1, # Unburned
+    -270, -100, 2, # Low
+    -450, -270, 3, # Moderate
+    -1000, -450, 4), # High
+    ncol = 3, byrow = T)
+
+# Now, we can use that matrix to classify dNBR
+homemade_burn_severity <- classify(dNBR, classification_matrix, include.lowest = T)
+
+# compare to mtbs
+plot(homemade_burn_severity)
+plot(burn_severity)
+```
+
+## Sampling Points
+```{r}
+# uniform sampling
+regular_pts <- spatSample(RdNBR, 54, method = 'regular') # only return values
+
+regular_spatial_pts <- spatSample(RdNBR, 54, method = 'regular', as.raster = T) # return points
+
+# let's check it out
+plot(RdNBR)
+points(regular_spatial_pts)
+# note how ~20 points are outside of the plot because it uses the raster extent to set the bounds of spatSample
+
+# random sampling
+random_spatial_pts <- spatSample(burn_severity, 10, method = 'random', as.raster = F, xy = T)
+# check it out
+plot(burn_severity)
+points(random_spatial_pts, pch = 21, bg = 'blue', col = 'black')
+```
+
+To be honest, it's not all-that-helpful to sample points within the extent of the raster. In this case, we'd prefer to sample points within the extent of the burn boundary. So, let's use sf instead of terra
+```{r}
+sf_random_pts <- st_sample(willow_boundary, 10, type = 'random')
+
+plot(burn_severity)
+points(sf_random_pts, pch = 21, bg = 'blue', col = 'black')
+# much better!
+```
